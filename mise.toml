@@ -1,0 +1,24 @@
+[tools]
+python = "3.12"
+
+[env]
+_.file = ".env"
+
+[tasks]
+# 安装依赖
+install = "uv sync"
+
+# 运行 MCP 服务
+server = "uv run python weather_server.py"
+
+# 运行测试
+test = "uv run python test_server.py"
+
+# 检查代码
+lint = "uv run ruff check ."
+
+# 格式化代码
+format = "uv run ruff format ."
+
+# 清理缓存
+clean = "rm -rf __pycache__ .ruff_cache .venv"
