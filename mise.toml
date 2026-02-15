@@ -9,10 +9,10 @@ _.file = ".env"
 install = "uv sync"
 
 # 运行 MCP 服务
-server = "uv run python weather_server.py"
+server = "uv run python weather_mcp.py"
 
 # 运行测试
-test = "uv run python test_server.py"
+test = "uv run python test.py"
 
 # 检查代码
 lint = "uv run ruff check ."

@@ -9,7 +9,7 @@ import sys
 
 from fastmcp import Client
 
-from weather_server import mcp
+from weather_mcp import mcp
 
 
 async def test_list_tools():
@@ -96,12 +96,12 @@ async def main():
     print("=" * 50 + "\n")
 
     # 检查 JWT 环境变量
-    from weather_server import (
-        PROJECT_ID,
+    from weather_mcp import (
+        API_HOST,
         KEY_ID,
         PRIVATE_KEY,
         PRIVATE_KEY_PATH,
-        API_HOST,
+        PROJECT_ID,
     )
 
     if (
