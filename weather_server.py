@@ -2,10 +2,12 @@
 """
 和风天气 MCP 服务
 使用 FastMCP 框架实现的天气查询服务
+使用 JWT Token 鉴权
 """
 
 import os
 import sys
+import time
 from datetime import datetime
 
 import httpx
@@ -15,19 +17,112 @@ from pydantic import BaseModel
 # 创建 MCP 服务实例
 mcp = FastMCP("weather")
 
-# API 配置
-API_KEY = os.getenv("QWEATHER_API_KEY", "")
-API_HOST = os.getenv("QWEATHER_API_HOST", "https://devapi.qweather.com")
 
-# 创建 HTTP 客户端
-client = httpx.AsyncClient(
-    base_url=API_HOST,
-    headers={
-        "Authorization": f"Bearer {API_KEY}",
-        "Accept-Encoding": "gzip",
-    },
-    timeout=30.0,
-)
+class JWTAuthManager:
+    """JWT Token 管理器 - 使用和风天气 JWT 鉴权"""
+
+    TOKEN_EXPIRY = 82800  # 23小时（留1小时缓冲）
+    REFRESH_MARGIN = 300  # 提前5分钟刷新
+
+    def __init__(self, project_id: str, key_id: str, private_key_pem: str):
+        self.project_id = project_id
+        self.key_id = key_id
+        self.private_key = self._load_private_key(private_key_pem)
+        self._token: str | None = None
+        self._expiry: int = 0
+
+    def _load_private_key(self, pem_content: str):
+        """加载 Ed25519 私钥"""
+        from cryptography.hazmat.primitives import serialization
+
+        try:
+            return serialization.load_pem_private_key(
+                pem_content.encode(), password=None
+            )
+        except Exception as e:
+            raise ValueError(f"私钥加载失败: {e}")
+
+    def get_token(self) -> str:
+        """获取有效 Token（自动刷新）"""
+        now = int(time.time())
+        if not self._token or now >= (self._expiry - self.REFRESH_MARGIN):
+            self._token = self._generate_token(now)
+        return self._token
+
+    def _generate_token(self, now: int) -> str:
+        """生成新 Token"""
+        import jwt
+
+        self._expiry = now + self.TOKEN_EXPIRY
+        headers = {"kid": self.key_id}
+        payload = {
+            "sub": self.project_id,
+            "iat": now - 30,  # 提前30秒防止时间误差
+            "exp": self._expiry,
+        }
+        return jwt.encode(payload, self.private_key, algorithm="EdDSA", headers=headers)
+
+
+# JWT 配置加载
+PROJECT_ID = os.getenv("QWEATHER_PROJECT_ID", "")
+KEY_ID = os.getenv("QWEATHER_KEY_ID", "")
+PRIVATE_KEY = os.getenv("QWEATHER_PRIVATE_KEY", "")
+PRIVATE_KEY_PATH = os.getenv("QWEATHER_PRIVATE_KEY_PATH", "")
+API_HOST = os.getenv("QWEATHER_API_HOST", "")
+
+# 初始化 JWT 管理器（如果配置完整则自动初始化）
+jwt_manager: JWTAuthManager | None = None
+
+
+def _init_jwt_manager() -> JWTAuthManager | None:
+    """初始化 JWT 管理器"""
+    global jwt_manager
+
+    if not PROJECT_ID or not KEY_ID:
+        return None
+
+    # 获取私钥（优先使用直接配置的私钥内容）
+    private_key = None
+    if PRIVATE_KEY:
+        # 直接配置的私钥内容
+        private_key = PRIVATE_KEY.replace("\\n", "\n")
+    elif PRIVATE_KEY_PATH and os.path.exists(PRIVATE_KEY_PATH):
+        # 从文件读取私钥
+        try:
+            with open(PRIVATE_KEY_PATH, "r") as f:
+                private_key = f.read()
+        except Exception:
+            return None
+    else:
+        return None
+
+    try:
+        jwt_manager = JWTAuthManager(PROJECT_ID, KEY_ID, private_key)
+        return jwt_manager
+    except Exception:
+        return None
+
+
+# HTTP 客户端（延迟初始化）
+client: httpx.AsyncClient | None = None
+
+
+def _init_http_client() -> httpx.AsyncClient | None:
+    """初始化 HTTP 客户端"""
+    global client
+    if not API_HOST:
+        return None
+    client = httpx.AsyncClient(
+        base_url=API_HOST,
+        headers={"Accept-Encoding": "gzip"},
+        timeout=30.0,
+    )
+    return client
+
+
+# 尝试自动初始化
+_init_jwt_manager()
+_init_http_client()
 
 
 class CurrentWeather(BaseModel):
@@ -84,18 +179,33 @@ async def _make_request(endpoint: str, params: dict) -> dict:
     Raises:
         Exception: 当 API 调用失败时
     """
-    if not API_KEY or API_KEY == "your_api_key_here":
-        raise Exception("未配置和风天气 API Key，请设置 QWEATHER_API_KEY 环境变量")
+    global client
+
+    if jwt_manager is None:
+        raise Exception("JWT 管理器未初始化")
+
+    if client is None:
+        if not API_HOST:
+            raise Exception("QWEATHER_API_HOST 未配置")
+        client = httpx.AsyncClient(
+            base_url=API_HOST,
+            headers={"Accept-Encoding": "gzip"},
+            timeout=30.0,
+        )
 
     try:
-        response = await client.get(endpoint, params=params)
+        # 获取 JWT Token 并发送请求
+        token = jwt_manager.get_token()
+        response = await client.get(
+            endpoint, params=params, headers={"Authorization": f"Bearer {token}"}
+        )
         response.raise_for_status()
         data = response.json()
 
         if data.get("code") != "200":
             error_msg = f"API 错误: 状态码 {data.get('code')}"
             if data.get("code") == "401":
-                error_msg = "API Key 无效或已过期"
+                error_msg = "JWT Token 无效或已过期"
             elif data.get("code") == "402":
                 error_msg = "API 调用次数已用完"
             elif data.get("code") == "404":
@@ -352,13 +462,58 @@ async def get_weather_forecast(location: str, days: int = 7) -> str:
 
 def main():
     """主函数"""
-    # 检查 API Key
-    if not API_KEY or API_KEY == "your_api_key_here":
-        print("错误: 未配置和风天气 API Key", file=sys.stderr)
-        print("请设置 QWEATHER_API_KEY 环境变量或在 .env 文件中配置", file=sys.stderr)
+    global jwt_manager
+
+    # 尝试初始化 JWT 管理器
+    if jwt_manager is None:
+        _init_jwt_manager()
+
+    # 检查是否成功初始化
+    if jwt_manager is None:
+        print("错误: JWT 鉴权初始化失败", file=sys.stderr)
+        print("\n请检查以下环境变量:", file=sys.stderr)
+
+        if not PROJECT_ID:
+            print("  ❌ QWEATHER_PROJECT_ID: 未配置", file=sys.stderr)
+        else:
+            print("  ✓ QWEATHER_PROJECT_ID: 已配置", file=sys.stderr)
+
+        if not KEY_ID:
+            print("  ❌ QWEATHER_KEY_ID: 未配置", file=sys.stderr)
+        else:
+            print("  ✓ QWEATHER_KEY_ID: 已配置", file=sys.stderr)
+
+        if not PRIVATE_KEY and not PRIVATE_KEY_PATH:
+            print(
+                "  ❌ 私钥: 未配置 (QWEATHER_PRIVATE_KEY 或 QWEATHER_PRIVATE_KEY_PATH)",
+                file=sys.stderr,
+            )
+        elif PRIVATE_KEY:
+            print("  ✓ 私钥: 已通过 QWEATHER_PRIVATE_KEY 配置", file=sys.stderr)
+        elif PRIVATE_KEY_PATH:
+            if os.path.exists(PRIVATE_KEY_PATH):
+                print(f"  ✓ 私钥: 文件存在 ({PRIVATE_KEY_PATH})", file=sys.stderr)
+            else:
+                print(f"  ❌ 私钥: 文件不存在 ({PRIVATE_KEY_PATH})", file=sys.stderr)
+
+        print("\n示例:", file=sys.stderr)
+        print("  export QWEATHER_PROJECT_ID=xxx", file=sys.stderr)
+        print("  export QWEATHER_KEY_ID=xxx", file=sys.stderr)
+        print(
+            "  export QWEATHER_PRIVATE_KEY_PATH=/path/to/ed25519-private.pem",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-        mcp.run()
+    # 检查 API_HOST
+    if not API_HOST:
+        print("错误: 未配置 QWEATHER_API_HOST 环境变量", file=sys.stderr)
+        print("\n请设置 API 主机地址:", file=sys.stderr)
+        print("  export QWEATHER_API_HOST=https://api.qweather.com", file=sys.stderr)
+        sys.exit(1)
+
+    print("✓ JWT 鉴权初始化成功")
+    mcp.run()
 
 
 if __name__ == "__main__":
