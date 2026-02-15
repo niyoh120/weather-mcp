@@ -4,13 +4,14 @@
 
 ## 功能特性
 
-- **实时天气查询**: 支持通过城市名称（如"北京"）或 LocationID（如"101010100"）查询当前天气
+- **实时天气查询**: 支持通过城市名称查询当前天气
 - **未来天气预报**: 支持3/7/10/15/30天天气预报（默认7天）
+- **天气预警**: 集成实时天气预警信息
+- **空气质量**: 集成实时空气质量和3天预报
+- **天气指数**: 集成生活指数预报（运动、洗车、穿衣、紫外线、感冒等）
 - **中文响应**: 所有天气数据返回中文描述
 - **MCP标准协议**: 兼容 Claude Desktop、Cursor 等 MCP 客户端
 - **JWT 鉴权**: 使用和风水官方推荐的 JWT Token 鉴权，更安全
-
-**说明**: 工具会自动将城市名称转换为 LocationID。如果城市名称无效，会返回错误信息。
 
 ## 快速开始
 
@@ -35,14 +36,6 @@ openssl pkey -pubout -in ed25519-private.pem > ed25519-public.pem
 
 ### 2. 配置环境变量
 
-复制 `.env.example` 为 `.env`：
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env` 文件：
-
 ```bash
 # JWT 鉴权配置
 QWEATHER_PROJECT_ID=your_project_id_here      # 项目 ID
@@ -66,7 +59,7 @@ QWEATHER_API_HOST=https://api.qweather.com
 使用 **uvx** 直接从 GitHub 运行：
 
 ```bash
-uvx --from git+https://github.com/niyoh/weather-mcp.git weather-server
+uvx git+https://github.com/niyoh120/weather-mcp
 ```
 
 **本地开发**（可选）：
@@ -95,9 +88,7 @@ uv run python test.py
     "weather": {
       "command": "uvx",
       "args": [
-        "--from",
-        "git+https://github.com/niyoh/weather-mcp.git",
-        "weather-server"
+        "git+https://github.com/niyoh120/weather-mcp"
       ],
       "env": {
         "QWEATHER_PROJECT_ID": "your_project_id",
@@ -128,14 +119,15 @@ uv run python test.py
 
 ## 可用工具
 
-### 1. `get_current_weather(location: str)`
+### 1. `get_current_weather(location: str, include_warning?: bool, include_air_quality?: bool, include_indices?: bool)`
 
-获取指定城市的当前天气信息。
+获取指定城市的当前天气信息，包含天气预警、空气质量和天气指数。
 
 **参数:**
-- `location`: 城市名称（如"北京"、"上海"）或 LocationID（如"101010100"）
-  - 支持中文城市名称，会自动搜索匹配的 LocationID
-  - 如果城市名称无效，会返回错误信息
+- `location`: 城市名称（如"北京"、"上海"）
+- `include_warning`: 是否包含天气预警（默认 true）
+- `include_air_quality`: 是否包含空气质量（默认 true）
+- `include_indices`: 是否包含天气指数（默认 true）
 
 **返回示例:**
 ```
@@ -147,19 +139,30 @@ uv run python test.py
 风向: 东北风
 风力: 3级
 湿度: 45%
+气压: 1020hPa
 降水量: 0.0mm
 能见度: 10km
+
+空气质量:
+  AQI: 45 (优)
+  PM2.5: 12 μg/m³
+  建议: 各类人群可正常活动。
+
+今日指数:
+  • 运动指数: 较适宜
+  • 洗车指数: 适宜
+  • 穿衣指数: 较冷
 ```
 
-### 2. `get_weather_forecast(location: str, days: int = 7)`
+### 2. `get_weather_forecast(location: str, days: int = 7, include_air_quality?: bool, include_indices?: bool)`
 
-获取指定城市的未来天气预报。
+获取指定城市的未来天气预报，包含空气质量和天气指数。
 
 **参数:**
-- `location`: 城市名称（如"北京"、"上海"）或 LocationID（如"101010100"）
-  - 支持中文城市名称，会自动搜索匹配的 LocationID
-  - 如果城市名称无效，会返回错误信息
+- `location`: 城市名称（如"北京"、"上海"）
 - `days`: 预报天数，支持 3/7/10/15/30，默认 7 天
+- `include_air_quality`: 是否包含空气质量预报（默认 true）
+- `include_indices`: 是否包含天气指数（默认 true）
 
 **返回示例:**
 ```
@@ -171,6 +174,7 @@ uv run python test.py
   风向: 北风 2级
   湿度: 35%
   紫外线: 弱
+  空气质量: 45 (优)
 
 2024-01-17:
   天气: 多云
@@ -178,6 +182,10 @@ uv run python test.py
   风向: 东北风 3级
   湿度: 50%
   紫外线: 中等
+
+未来3天生活指数:
+  • 运动指数: 较适宜
+  • 洗车指数: 适宜
 ```
 
 ## 技术栈
@@ -194,9 +202,10 @@ uv run python test.py
 1. **API 调用限制**: 根据订阅等级有不同的调用限制
 2. **数据延迟**: 实况数据相比真实物理世界有 5-20 分钟延迟
 3. **Gzip 压缩**: API 返回 Gzip 压缩数据，已自动处理
-4. **LocationID**: 中国城市的 LocationID 可以在[常见城市列表](https://dev.qweather.com/docs/resource/location-list/)中查询
-5. **私钥安全**: 私钥文件应设置 600 权限，不要提交到代码仓库
-6. **系统时间**: 确保服务器时间准确，否则 JWT 鉴权会失败
+4. **空气质量预报**: 最多显示3天预报数据
+5. **天气指数**: 支持运动、洗车、穿衣、紫外线、感冒、空气污染扩散等指数
+6. **私钥安全**: 私钥文件应设置 600 权限，不要提交到代码仓库
+7. **系统时间**: 确保服务器时间准确，否则 JWT 鉴权会失败
 
 ## 错误处理
 
