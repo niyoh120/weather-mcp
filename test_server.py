@@ -95,11 +95,34 @@ async def main():
     print("和风天气 MCP 服务测试 (使用 FastMCP Client)")
     print("=" * 50 + "\n")
 
-    # 检查 API Key
-    api_key = os.getenv("QWEATHER_API_KEY", "")
-    if not api_key or api_key == "your_api_key_here":
-        print("⚠️  警告: 未配置 QWEATHER_API_KEY")
-        print("请在 .env 文件中设置有效的 API Key\n")
+    # 检查 JWT 环境变量
+    from weather_server import (
+        PROJECT_ID,
+        KEY_ID,
+        PRIVATE_KEY,
+        PRIVATE_KEY_PATH,
+        API_HOST,
+    )
+
+    if (
+        not PROJECT_ID
+        or not KEY_ID
+        or (not PRIVATE_KEY and not PRIVATE_KEY_PATH)
+        or not API_HOST
+    ):
+        print("❌ 错误: 缺少必要的环境变量配置")
+        print("\n请配置以下环境变量:")
+        print("  QWEATHER_PROJECT_ID=your_project_id")
+        print("  QWEATHER_KEY_ID=your_key_id")
+        print("  QWEATHER_API_HOST=https://api.qweather.com")
+        print("\n私钥配置（二选一）:")
+        print("  QWEATHER_PRIVATE_KEY=直接填写私钥内容")
+        print("  QWEATHER_PRIVATE_KEY_PATH=/path/to/private_key.pem")
+        print("\n示例:")
+        print("  export QWEATHER_PROJECT_ID=xxx")
+        print("  export QWEATHER_KEY_ID=xxx")
+        print("  export QWEATHER_API_HOST=https://api.qweather.com")
+        print("  export QWEATHER_PRIVATE_KEY_PATH=/path/to/ed25519-private.pem")
         return 1
 
     try:
