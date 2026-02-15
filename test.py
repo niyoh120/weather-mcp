@@ -27,9 +27,9 @@ async def test_list_tools():
 
 
 async def test_current_weather():
-    """测试当前天气查询"""
+    """测试当前天气查询（包含预警、空气质量和指数）"""
     print("=" * 50)
-    print("测试 2: 当前天气查询 (北京)")
+    print("测试 2: 当前天气查询 - 北京（含预警/空气质量/指数）")
     print("=" * 50)
 
     async with Client(mcp) as client:
@@ -42,9 +42,9 @@ async def test_current_weather():
 
 
 async def test_weather_forecast():
-    """测试天气预报查询"""
+    """测试天气预报查询（包含空气质量和指数）"""
     print("=" * 50)
-    print("测试 3: 7天天气预报查询 (上海)")
+    print("测试 3: 7天天气预报 - 上海（含空气质量/指数）")
     print("=" * 50)
 
     async with Client(mcp) as client:
@@ -57,15 +57,21 @@ async def test_weather_forecast():
     print()
 
 
-async def test_with_location_id():
-    """测试使用 LocationID 查询"""
+async def test_current_weather_no_extras():
+    """测试当前天气查询（不包含额外信息）"""
     print("=" * 50)
-    print("测试 4: 使用 LocationID 查询 (101010100)")
+    print("测试 4: 当前天气查询（不含额外信息）")
     print("=" * 50)
 
     async with Client(mcp) as client:
         result = await client.call_tool(
-            "get_current_weather", {"location": "101010100"}
+            "get_current_weather",
+            {
+                "location": "深圳",
+                "include_warning": False,
+                "include_air_quality": False,
+                "include_indices": False,
+            },
         )
         for content in result.content:
             if hasattr(content, "text"):
@@ -135,8 +141,8 @@ async def main():
         # 测试 3: 天气预报
         await test_weather_forecast()
 
-        # 测试 4: 使用 LocationID
-        await test_with_location_id()
+        # 测试 4: 当前天气（不含额外信息）
+        await test_current_weather_no_extras()
 
         # 测试 5: 无效城市
         await test_invalid_city()

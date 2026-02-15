@@ -5,6 +5,7 @@
 使用 JWT Token 鉴权
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -173,6 +174,47 @@ class CityInfo(BaseModel):
     location_id: str
     adm1: str
     adm2: str
+    lat: str = ""  # 纬度，用于预警和空气质量 API
+    lon: str = ""  # 经度，用于预警和空气质量 API
+
+
+class WeatherWarning(BaseModel):
+    """天气预警数据模型"""
+
+    sender_name: str
+    event_type: str
+    severity: str
+    headline: str
+    description: str
+    instruction: str
+    effective_time: str
+    expire_time: str
+    color: str
+
+
+class AirQuality(BaseModel):
+    """空气质量数据模型"""
+
+    aqi: str
+    category: str
+    primary_pollutant: str
+    pm25: str
+    pm10: str
+    no2: str
+    o3: str
+    co: str
+    so2: str
+    health_effect: str
+    health_advice_general: str
+    health_advice_sensitive: str
+
+
+class WeatherIndex(BaseModel):
+    """天气指数数据模型"""
+
+    name: str
+    category: str
+    text: str
 
 
 async def _make_request(endpoint: str, params: dict) -> dict:
@@ -231,39 +273,41 @@ async def _make_request(endpoint: str, params: dict) -> dict:
         raise Exception(f"请求失败: {str(e)}")
 
 
-async def _get_location_id(location: str) -> tuple[str, str]:
+async def _get_city_info(city_name: str) -> tuple[str, str, str, str, str, str]:
     """
-    获取 LocationID 和城市名称
+    获取城市完整信息（LocationID、名称、经纬度等）
 
     Args:
-        location: 城市名称或 LocationID
+        city_name: 城市名称（如"北京"、"上海浦东"）
 
     Returns:
-        (LocationID, 城市名称) 元组
+        (LocationID, 城市名称, 纬度, 经度, 省份, 城市/区县) 元组
     """
-    # 如果 location 是纯数字，则认为是 LocationID
-    if location.isdigit():
-        return location, location
-
-    # 否则调用城市搜索 API
+    # 调用城市搜索 API
     params = {
-        "location": location,
+        "location": city_name,
         "lang": "zh",
     }
 
     data = await _make_request("/geo/v2/city/lookup", params)
 
     if not data.get("location") or len(data["location"]) == 0:
-        raise Exception(f"未找到城市: {location}")
+        raise Exception(f"未找到城市: {city_name}")
 
     city = data["location"][0]
     location_id = city.get("id", "")
-    city_name = city.get("name", location)
+    name = city.get("name", city_name)
+    adm1 = city.get("adm1", "")
+    adm2 = city.get("adm2", "")
+    lat = city.get("lat", "")
+    lon = city.get("lon", "")
 
-    if city.get("adm1") and city.get("adm1") != city_name:
-        city_name = f"{city['adm1']}{city_name}"
+    # 构造完整城市名（如"北京市"）
+    display_name = name
+    if adm1 and adm1 != name:
+        display_name = f"{adm1}{name}"
 
-    return location_id, city_name
+    return location_id, display_name, lat, lon, adm1, adm2
 
 
 async def _search_city(city_name: str) -> list[CityInfo]:
@@ -302,34 +346,255 @@ async def _search_city(city_name: str) -> list[CityInfo]:
     return cities
 
 
-@mcp.tool()
-async def get_current_weather(location: str) -> str:
+async def _get_weather_warning(lat: str, lon: str) -> list[WeatherWarning]:
     """
-    获取指定城市的当前天气
+    获取天气预警信息
 
     Args:
-        location: 城市名称（如"北京"）或 LocationID（如"101010100"）
+        lat: 纬度
+        lon: 经度
 
     Returns:
-        格式化后的当前天气信息
+        天气预警列表
+    """
+    if not lat or not lon:
+        return []
+
+    try:
+        # 格式化坐标为最多2位小数
+        lat_formatted = f"{float(lat):.2f}"
+        lon_formatted = f"{float(lon):.2f}"
+
+        endpoint = f"/weatheralert/v1/current/{lat_formatted}/{lon_formatted}"
+
+        # 直接发送请求，不经过 _make_request（因为新 API 没有 code 字段）
+        token = jwt_manager.get_token()
+        response = await client.get(
+            endpoint, headers={"Authorization": f"Bearer {token}"}
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        # 检查 zeroResult 字段
+        metadata = data.get("metadata", {})
+        if metadata.get("zeroResult", False):
+            return []  # 没有预警数据
+
+        warnings = []
+        for alert in data.get("alerts", []):
+            warning = WeatherWarning(
+                sender_name=alert.get("senderName", ""),
+                event_type=alert.get("eventType", {}).get("name", ""),
+                severity=alert.get("severity", ""),
+                headline=alert.get("headline", ""),
+                description=alert.get("description", ""),
+                instruction=alert.get("instruction", ""),
+                effective_time=alert.get("effectiveTime", ""),
+                expire_time=alert.get("expireTime", ""),
+                color=alert.get("color", {}).get("code", ""),
+            )
+            warnings.append(warning)
+
+        return warnings
+    except Exception as e:
+        logger.warning(f"获取天气预警失败: {e}")
+        return []
+
+
+async def _get_air_quality_current(lat: str, lon: str) -> AirQuality | None:
+    """
+    获取实时空气质量
+
+    Args:
+        lat: 纬度
+        lon: 经度
+
+    Returns:
+        空气质量数据，失败返回 None
+    """
+    if not lat or not lon:
+        return None
+
+    try:
+        # 格式化坐标为最多2位小数
+        lat_formatted = f"{float(lat):.2f}"
+        lon_formatted = f"{float(lon):.2f}"
+
+        endpoint = f"/airquality/v1/current/{lat_formatted}/{lon_formatted}"
+
+        # 直接发送请求，不经过 _make_request（因为新 API 没有 code 字段）
+        token = jwt_manager.get_token()
+        response = await client.get(
+            endpoint, headers={"Authorization": f"Bearer {token}"}
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        indexes = data.get("indexes", [])
+        if not indexes:
+            return None
+
+        # 使用第一个 AQI 数据（通常是当地标准）
+        aqi_data = indexes[0]
+
+        # 获取污染物数据
+        pollutants = {p.get("code", "").lower(): p for p in data.get("pollutants", [])}
+
+        def get_pollutant_value(code: str) -> str:
+            p = pollutants.get(code.lower(), {})
+            conc = p.get("concentration", {})
+            return f"{conc.get('value', '')} {conc.get('unit', '')}".strip()
+
+        # 安全获取嵌套字段
+        primary_pollutant_data = aqi_data.get("primaryPollutant") or {}
+        health = aqi_data.get("health") or {}
+        advice = health.get("advice") or {}
+
+        return AirQuality(
+            aqi=str(aqi_data.get("aqiDisplay", "")),
+            category=aqi_data.get("category", ""),
+            primary_pollutant=primary_pollutant_data.get("name", ""),
+            pm25=get_pollutant_value("pm2p5"),
+            pm10=get_pollutant_value("pm10"),
+            no2=get_pollutant_value("no2"),
+            o3=get_pollutant_value("o3"),
+            co=get_pollutant_value("co"),
+            so2=get_pollutant_value("so2"),
+            health_effect=health.get("effect", ""),
+            health_advice_general=advice.get("generalPopulation", ""),
+            health_advice_sensitive=advice.get("sensitivePopulation", ""),
+        )
+    except Exception as e:
+        logger.warning(f"获取空气质量失败: {e}")
+        return None
+
+
+async def _get_air_quality_forecast(lat: str, lon: str) -> list[dict]:
+    """
+    获取空气质量预报（3天）
+
+    Args:
+        lat: 纬度
+        lon: 经度
+
+    Returns:
+        每日空气质量预报列表
+    """
+    if not lat or not lon:
+        return []
+
+    try:
+        # 格式化坐标为最多2位小数
+        lat_formatted = f"{float(lat):.2f}"
+        lon_formatted = f"{float(lon):.2f}"
+
+        endpoint = f"/airquality/v1/daily/{lat_formatted}/{lon_formatted}"
+
+        # 直接发送请求，不经过 _make_request（因为新 API 没有 code 字段）
+        token = jwt_manager.get_token()
+        response = await client.get(
+            endpoint, headers={"Authorization": f"Bearer {token}"}
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return data.get("days", [])
+    except Exception as e:
+        logger.warning(f"获取空气质量预报失败: {e}")
+        return []
+
+
+async def _get_weather_indices(
+    location_id: str, days: str = "3d"
+) -> list[WeatherIndex]:
+    """
+    获取天气指数预报
+
+    Args:
+        location_id: LocationID
+        days: 预报天数 ("1d" 或 "3d")
+
+    Returns:
+        天气指数列表
     """
     try:
-        # 获取 LocationID 和城市名称
-        location_id, city_name = await _get_location_id(location)
-
-        # 调用实时天气 API
+        endpoint = f"/v7/indices/{days}"
         params = {
             "location": location_id,
+            "type": "1,2,3,5,8,9",  # 运动、洗车、穿衣、紫外线、感冒、空气污染扩散
             "lang": "zh",
-            "unit": "m",  # 公制单位
         }
+        data = await _make_request(endpoint, params)
 
-        data = await _make_request("/v7/weather/now", params)
+        indices = []
+        for item in data.get("daily", []):
+            index = WeatherIndex(
+                name=item.get("name", ""),
+                category=item.get("category", ""),
+                text=item.get("text", ""),
+            )
+            indices.append(index)
 
-        if "now" not in data:
+        return indices
+    except Exception as e:
+        logger.warning(f"获取天气指数失败: {e}")
+        return []
+
+
+@mcp.tool()
+async def get_current_weather(
+    location: str,
+    include_warning: bool = True,
+    include_air_quality: bool = True,
+    include_indices: bool = True,
+) -> str:
+    """
+    获取指定城市的当前天气，包含天气预警、空气质量和天气指数
+
+    Args:
+        location: 城市名称（如"北京"）
+        include_warning: 是否包含天气预警（默认True）
+        include_air_quality: 是否包含空气质量（默认True）
+        include_indices: 是否包含天气指数（默认True）
+
+    Returns:
+        格式化后的当前天气信息，包含预警、空气质量和指数
+    """
+    try:
+        # 获取城市完整信息
+        location_id, city_name, lat, lon, adm1, adm2 = await _get_city_info(location)
+
+        # 并行获取天气数据和其他信息
+        weather_task = _make_request(
+            "/v7/weather/now",
+            {"location": location_id, "lang": "zh", "unit": "m"},
+        )
+
+        # 根据参数决定是否获取额外信息
+        tasks = [weather_task]
+        if include_warning:
+            tasks.append(_get_weather_warning(lat, lon))
+        if include_air_quality:
+            tasks.append(_get_air_quality_current(lat, lon))
+        if include_indices:
+            tasks.append(_get_weather_indices(location_id, "1d"))
+
+        # 等待所有请求完成
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 解析结果
+        weather_data = results[0]
+        if isinstance(weather_data, Exception):
+            raise weather_data
+
+        warning_list = results[1] if include_warning else []
+        air_quality = results[2] if include_air_quality else None
+        indices = results[3] if include_indices else []
+
+        if "now" not in weather_data:
             return f"无法获取 {city_name} 的天气信息"
 
-        now = data["now"]
+        now = weather_data["now"]
         weather = CurrentWeather(
             location=city_name,
             obs_time=now.get("obsTime", ""),
@@ -366,6 +631,39 @@ async def get_current_weather(location: str) -> str:
             ]
         )
 
+        # 添加天气预警
+        if include_warning and warning_list and not isinstance(warning_list, Exception):
+            result.append("\n⚠️ 天气预警:")
+            for i, warning in enumerate(warning_list[:3], 1):  # 最多显示3条
+                result.append(f"\n  {i}. {warning.headline}")
+                result.append(f"     类型: {warning.event_type}")
+                result.append(f"     级别: {warning.severity}")
+                result.append(f"     描述: {warning.description[:100]}...")
+
+        # 添加空气质量
+        if (
+            include_air_quality
+            and air_quality
+            and not isinstance(air_quality, Exception)
+        ):
+            result.append("\n🌫️ 空气质量:")
+            result.append(f"  AQI: {air_quality.aqi} ({air_quality.category})")
+            result.append(f"  首要污染物: {air_quality.primary_pollutant}")
+            result.append(f"  PM2.5: {air_quality.pm25}")
+            result.append(f"  PM10: {air_quality.pm10}")
+            if air_quality.health_effect:
+                result.append(f"  健康影响: {air_quality.health_effect}")
+            if air_quality.health_advice_general:
+                result.append(f"  建议: {air_quality.health_advice_general}")
+
+        # 添加天气指数
+        if include_indices and indices and not isinstance(indices, Exception):
+            result.append("\n📊 今日指数:")
+            for index in indices:
+                result.append(f"  • {index.name}: {index.category}")
+                if index.text:
+                    result.append(f"    {index.text}")
+
         return "\n".join(result)
 
     except Exception as e:
@@ -373,16 +671,23 @@ async def get_current_weather(location: str) -> str:
 
 
 @mcp.tool()
-async def get_weather_forecast(location: str, days: int = 7) -> str:
+async def get_weather_forecast(
+    location: str,
+    days: int = 7,
+    include_air_quality: bool = True,
+    include_indices: bool = True,
+) -> str:
     """
-    获取指定城市的未来天气预报
+    获取指定城市的未来天气预报，包含空气质量预报和天气指数
 
     Args:
-        location: 城市名称（如"北京"）或 LocationID（如"101010100"）
+        location: 城市名称（如"北京"）
         days: 预报天数，支持 3/7/10/15/30，默认 7 天
+        include_air_quality: 是否包含空气质量预报（默认True）
+        include_indices: 是否包含天气指数（默认True）
 
     Returns:
-        格式化后的天气预报信息
+        格式化后的天气预报信息，包含空气质量和指数
     """
     try:
         # 验证 days 参数
@@ -390,18 +695,32 @@ async def get_weather_forecast(location: str, days: int = 7) -> str:
         if days not in valid_days:
             days = 7  # 使用默认值
 
-        # 获取 LocationID 和城市名称
-        location_id, city_name = await _get_location_id(location)
+        # 获取城市完整信息
+        location_id, city_name, lat, lon, adm1, adm2 = await _get_city_info(location)
 
-        # 调用每日预报 API
-        params = {
-            "location": location_id,
-            "lang": "zh",
-            "unit": "m",
-        }
+        # 并行获取天气数据和其他信息
+        weather_task = _make_request(
+            f"/v7/weather/{days}d",
+            {"location": location_id, "lang": "zh", "unit": "m"},
+        )
 
-        endpoint = f"/v7/weather/{days}d"
-        data = await _make_request(endpoint, params)
+        # 根据参数决定是否获取额外信息
+        tasks = [weather_task]
+        if include_air_quality:
+            tasks.append(_get_air_quality_forecast(lat, lon))
+        if include_indices:
+            tasks.append(_get_weather_indices(location_id, "3d"))
+
+        # 等待所有请求完成
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 解析结果
+        data = results[0]
+        if isinstance(data, Exception):
+            raise data
+
+        air_quality_days = results[1] if include_air_quality else []
+        indices = results[2] if include_indices else []
 
         if "daily" not in data or not data["daily"]:
             return f"无法获取 {city_name} 的天气预报"
@@ -462,7 +781,37 @@ async def get_weather_forecast(location: str, days: int = 7) -> str:
             if uv_desc:
                 result.append(f"   ☀️ 紫外线: {uv_desc} ({forecast.uv_index})")
 
+            # 添加空气质量预报（仅前3天）
+            if (
+                include_air_quality
+                and air_quality_days
+                and not isinstance(air_quality_days, Exception)
+                and i <= len(air_quality_days)
+            ):
+                aq_day = air_quality_days[i - 1]
+                indexes = aq_day.get("indexes", [])
+                if indexes:
+                    aqi_data = indexes[0]
+                    result.append(
+                        f"   🌫️ 空气质量: {aqi_data.get('aqiDisplay', '')} ({aqi_data.get('category', '')})"
+                    )
+
             result.append("")  # 空行分隔
+
+        # 添加天气指数
+        if include_indices and indices and not isinstance(indices, Exception):
+            result.append("\n📊 未来3天生活指数:\n")
+            # 按指数类型分组显示
+            index_groups = {}
+            for idx in indices:
+                if idx.name not in index_groups:
+                    index_groups[idx.name] = []
+                index_groups[idx.name].append(idx)
+
+            for name, idx_list in index_groups.items():
+                result.append(f"  • {name}:")
+                for idx in idx_list:
+                    result.append(f"    {idx.category} - {idx.text}")
 
         return "\n".join(result)
 
