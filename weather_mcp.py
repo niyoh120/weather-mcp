@@ -14,6 +14,16 @@ import httpx
 from fastmcp import FastMCP
 from pydantic import BaseModel
 
+# 配置日志输出到 stderr
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    handlers=[logging.StreamHandler(sys.stderr)],
+)
+logger = logging.getLogger(__name__)
+
 # 创建 MCP 服务实例
 mcp = FastMCP("weather")
 
@@ -470,49 +480,48 @@ def main():
 
     # 检查是否成功初始化
     if jwt_manager is None:
-        print("错误: JWT 鉴权初始化失败", file=sys.stderr)
-        print("\n请检查以下环境变量:", file=sys.stderr)
+        logger.error("错误: JWT 鉴权初始化失败")
+        logger.error("")
+        logger.error("请检查以下环境变量:")
 
         if not PROJECT_ID:
-            print("  ❌ QWEATHER_PROJECT_ID: 未配置", file=sys.stderr)
+            logger.error("  ❌ QWEATHER_PROJECT_ID: 未配置")
         else:
-            print("  ✓ QWEATHER_PROJECT_ID: 已配置", file=sys.stderr)
+            logger.error("  ✓ QWEATHER_PROJECT_ID: 已配置")
 
         if not KEY_ID:
-            print("  ❌ QWEATHER_KEY_ID: 未配置", file=sys.stderr)
+            logger.error("  ❌ QWEATHER_KEY_ID: 未配置")
         else:
-            print("  ✓ QWEATHER_KEY_ID: 已配置", file=sys.stderr)
+            logger.error("  ✓ QWEATHER_KEY_ID: 已配置")
 
         if not PRIVATE_KEY and not PRIVATE_KEY_PATH:
-            print(
-                "  ❌ 私钥: 未配置 (QWEATHER_PRIVATE_KEY 或 QWEATHER_PRIVATE_KEY_PATH)",
-                file=sys.stderr,
+            logger.error(
+                "  ❌ 私钥: 未配置 (QWEATHER_PRIVATE_KEY 或 QWEATHER_PRIVATE_KEY_PATH)"
             )
         elif PRIVATE_KEY:
-            print("  ✓ 私钥: 已通过 QWEATHER_PRIVATE_KEY 配置", file=sys.stderr)
+            logger.error("  ✓ 私钥: 已通过 QWEATHER_PRIVATE_KEY 配置")
         elif PRIVATE_KEY_PATH:
             if os.path.exists(PRIVATE_KEY_PATH):
-                print(f"  ✓ 私钥: 文件存在 ({PRIVATE_KEY_PATH})", file=sys.stderr)
+                logger.error(f"  ✓ 私钥: 文件存在 ({PRIVATE_KEY_PATH})")
             else:
-                print(f"  ❌ 私钥: 文件不存在 ({PRIVATE_KEY_PATH})", file=sys.stderr)
+                logger.error(f"  ❌ 私钥: 文件不存在 ({PRIVATE_KEY_PATH})")
 
-        print("\n示例:", file=sys.stderr)
-        print("  export QWEATHER_PROJECT_ID=xxx", file=sys.stderr)
-        print("  export QWEATHER_KEY_ID=xxx", file=sys.stderr)
-        print(
-            "  export QWEATHER_PRIVATE_KEY_PATH=/path/to/ed25519-private.pem",
-            file=sys.stderr,
-        )
+        logger.error("")
+        logger.error("示例:")
+        logger.error("  export QWEATHER_PROJECT_ID=xxx")
+        logger.error("  export QWEATHER_KEY_ID=xxx")
+        logger.error("  export QWEATHER_PRIVATE_KEY_PATH=/path/to/ed25519-private.pem")
         sys.exit(1)
 
     # 检查 API_HOST
     if not API_HOST:
-        print("错误: 未配置 QWEATHER_API_HOST 环境变量", file=sys.stderr)
-        print("\n请设置 API 主机地址:", file=sys.stderr)
-        print("  export QWEATHER_API_HOST=https://api.qweather.com", file=sys.stderr)
+        logger.error("错误: 未配置 QWEATHER_API_HOST 环境变量")
+        logger.error("")
+        logger.error("请设置 API 主机地址:")
+        logger.error("  export QWEATHER_API_HOST=https://api.qweather.com")
         sys.exit(1)
 
-    print("✓ JWT 鉴权初始化成功")
+    logger.info("✓ JWT 鉴权初始化成功")
     mcp.run()
 
 
